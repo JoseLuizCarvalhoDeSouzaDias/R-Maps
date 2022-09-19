@@ -1,0 +1,286 @@
+---
+title: "20211213_NifaMaps"
+author: "Jose Dias"
+date: "12/13/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# R Setup
+```{r}
+rm(list=ls(all=T)) # erase the GLOBAL ENVIRONMENT
+#knitr::opts_chunk$set(echo=TRUE, comment=NA)
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(1234)
+```
+
+
+<!--- Load libraries and process data for plotting -->
+```{r libraries, echo=FALSE, eval=TRUE, message=FALSE}
+library(tidyverse)
+# tidyverse_packages(include_self = FALSE)
+# Loads: dplyr forcats ggplot2 lubridate purrr tibble
+
+# For producing maps:
+library(sf)
+# NOTE: sf requires maptools, rgeos to be loaded
+
+# Random forest fitting and tuning
+library(caret)
+library(ranger)
+library(tuneRanger)
+library(mlr)
+
+# Feature importance
+library(iml)
+
+# For color schemes:
+library(RColorBrewer)
+library(ggsci)
+
+# For graphics layout:
+library(gridExtra)
+library(grid)
+library(gtable)
+
+library(kableExtra)
+
+library(rcompanion)
+```
+
+
+# Calling Dataset
+```{r, include=FALSE}
+# setting wd
+setwd('D:\01.R\2020.04.13 RT NIFA')
+
+alfalfa<-read.csv("20211213_MAPS.csv", header=TRUE, as.is=T, na.strings=".")         
+
+anyNA(alfalfa)
+colnames(alfalfa, do.NULL = TRUE, prefix = "col")
+length(alfalfa$PLOT)
+str(alfalfa)
+summary(alfalfa)
+```
+
+
+# Field locations {.tabset .tabset-fade .tabset-pills}
+
+## Getting WI, ID, MI and PA Geometry
+```{r, include=FALSE}
+library(tidyverse)
+library(sf)
+library(here)
+library(ggplot2)
+library(ggmap)
+library(maps)
+library(mapdata)
+
+options(digits = 3)
+set.seed(1234)
+theme_set(theme_minimal())
+
+# Here we get a USA map from maps:
+usa <- map_data("usa")
+dim(usa)
+head(usa)
+tail(usa)
+
+# Here is the high-res world map centered on the Pacific Ocean from mapdata
+w2hr <- map_data("world2Hires")
+dim(w2hr)
+head(w2hr)
+tail(w2hr)
+
+```
+
+## By Year
+<!-- Supplementary Figure S1 -->
+```{r FieldLocations-MG, eval=TRUE, echo=FALSE}
+# Locations of all the fields facetted by year, field locations colored by maturity group:
+ggplot() +
+  geom_sf() +
+  theme_bw() +
+  geom_point(data = alfalfa, aes(x = Longitude, y = Latitude, colour = Texture2), size = 1.5, alpha = 0.5) +
+  scale_color_brewer(type = "qual", palette = "Set1", direction = 1) +
+  facet_wrap(~ Year, ncol = 2) +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme(axis.title.x = element_text(face = "bold", size = 12),
+        axis.text.x  = element_text(size = 9, angle = 90),
+        axis.title.y = element_text(size = 12, angle = 90, face = "bold"),
+        axis.text.y  = element_text(size = 9),
+        # Bold the facet text labels:
+        strip.text = element_text(face = "bold", size = 10)) +
+  theme(legend.position = "bottom", legend.direction = "horizontal", legend.box = "vertical") +
+  # override the transparency of the points for the legend:
+  guides(colour = guide_legend(nrow = 1, title = "Maturity group", override.aes = list(alpha = 1)))
+```
+
+
+# Drawing beautiful maps programmatically with R, sf and ggplot2 — Part 1: Basics
+*https://r-spatial.org/r/2018/10/25/ggplot2-sf.html*
+
+## Getting started
+
+Many R packages are available from CRAN, the Comprehensive R Archive Network, which is the primary repository of R packages. The full list of packages necessary for this series of tutorials can be installed with:`
+```{r}
+install.packages(c("cowplot", "googleway", "ggplot2", "ggrepel", 
+"ggspatial", "libwgeom", "sf", "rnaturalearth", "rnaturalearthdata"))
+```
+
+## Loading the basic packages
+
+We start by loading the basic packages necessary for all maps, i.e. ggplot2 and sf. We also suggest to use the classic dark-on-light theme for ggplot2 (theme_bw), which is appropriate for maps:
+```{r}
+library("ggplot2")
+theme_set(theme_bw())
+library("sf")
+```
+
+The package rnaturalearth provides a map of countries of the entire world. Use ne_countries to pull country data and choose the scale (rnaturalearthhires is necessary for scale = "large"). The function can return sp classes (default) or directly sf classes, as defined in the argument returnclass:
+```{r}
+library("rnaturalearth")
+library("rnaturalearthdata")
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+class(world)
+```
+
+## Data and basic plot (ggplot and geom_sf)
+
+First, let us start with creating a base map of the world using ggplot2. This base map will then be extended with different map elements, as well as zoomed in to an area of interest. We can check that the world map was properly retrieved and converted into an sf object, and plot it with ggplot2:
+```{r}
+library(ggplot2)
+
+ggplot(data = world) +
+    geom_sf()
+```
+
+This call nicely introduces the structure of a ggplot call: The first part ggplot(data = world) initiates the ggplot graph, and indicates that the main data is stored in the world object. The line ends up with a + sign, which indicates that the call is not complete yet, and each subsequent line correspond to another layer or scale. In this case, we use the geom_sf function, which simply adds a geometry stored in a sf object. By default, all geometry functions use the main data defined in ggplot(), but we will see later how to provide additional data.
+
+Note that layers are added one at a time in a ggplot call, so the order of each layer is very important. All data will have to be in an sf format to be used by ggplot2; data in other formats (e.g. classes from sp) will be manually converted to sf classes if necessary.
+
+
+## Title, subtitle, and axis labels (ggtitle, xlab, ylab)
+
+A title and a subtitle can be added to the map using the function ggtitle, passing any valid character string (e.g. with quotation marks) as arguments. Axis names are absent by default on a map, but can be changed to something more suitable (e.g. “Longitude” and “Latitude”), depending on the map:
+```{r}
+ggplot(data = world) +
+    geom_sf() +
+    xlab("Longitude") + ylab("Latitude") +
+    ggtitle("World map", subtitle = paste0("(", length(unique(world$NAME)), " countries)"))
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+##
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
